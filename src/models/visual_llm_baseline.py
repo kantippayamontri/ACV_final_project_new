@@ -97,9 +97,10 @@ class VisualLLMBaseline(nn.Module):
         inputs_embeds, prompt_ids, target_ids_tensor = self._build_inputs_embeds(projected, target_ids)
         labels = self._build_labels_mask(prompt_ids, projected.shape[1], target_ids, features.device)
 
-        attention_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=features.device)
+        attn_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=features.device)
+        attn_mask[:, prompt_ids.shape[1]:prompt_ids.shape[1] + mask.shape[1]] = mask.long()
 
-        outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask,
+        outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attn_mask,
                           labels=labels)
         return outputs.loss
 
@@ -118,8 +119,12 @@ class VisualLLMBaseline(nn.Module):
         prompt_embeds = self.llm.get_input_embeddings()(prompt_ids)
         inputs_embeds = torch.cat([prompt_embeds, projected], dim=1)
 
+        attn_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=features.device)
+        attn_mask[:, prompt_ids.shape[1]:prompt_ids.shape[1] + mask.shape[1]] = mask.long()
+
         outputs = self.llm.generate(
             inputs_embeds=inputs_embeds,
+            attention_mask=attn_mask,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,

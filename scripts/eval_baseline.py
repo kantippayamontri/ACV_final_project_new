@@ -31,7 +31,7 @@ def main():
     output_dir = Path(args.output_dir)
 
     print(f"Loading dataset from {args.lmdb}...")
-    dataset = How2SignLMDBDataset(lmdb_path=args.lmdb, metadata_csv=args.metadata)
+    dataset = How2SignLMDBDataset(lmdb_path=args.lmdb, metadata_path=args.metadata)
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False,
         collate_fn=collate_variable_features, num_workers=args.num_workers,

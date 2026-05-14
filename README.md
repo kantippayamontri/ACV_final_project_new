@@ -6,6 +6,20 @@
 uv sync
 ```
 
+## Download LLM
+
+Llama-3-8B is gated on HuggingFace. Request access at https://huggingface.co/meta-llama/Meta-Llama-3-8B, then:
+
+```bash
+HF_TOKEN=hf_xxxx uv run python scripts/download_llama.py
+```
+
+Or override the output directory:
+
+```bash
+uv run python scripts/download_llama.py --output-dir /path/to/save
+```
+
 ## Dataset Paths
 
 Place the dataset under `datasets/` using the paths expected by `scripts/extract_features.py`.

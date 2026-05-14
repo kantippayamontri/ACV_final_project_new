@@ -17,7 +17,7 @@ class How2SignLMDBDataset(Dataset):
         super().__init__()
         raw = self._load_metadata(metadata_path)
         self.env = lmdb.open(lmdb_path, readonly=True, subdir=False, lock=False,
-                             max_readers=1, meminit=False)
+                             max_readers=126, meminit=False)
         self.metadata = [r for r in raw if self._has_features(r["SENTENCE_NAME"])]
 
     def _load_metadata(self, path: str):

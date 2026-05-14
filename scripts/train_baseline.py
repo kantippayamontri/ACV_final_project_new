@@ -98,10 +98,10 @@ def main():
 
     print(f"Loading datasets...")
     train_dataset = How2SignLMDBDataset(
-        lmdb_path=args.train_lmdb, metadata_csv=args.train_metadata,
+        lmdb_path=args.train_lmdb, metadata_path=args.train_metadata,
     )
     val_dataset = How2SignLMDBDataset(
-        lmdb_path=args.val_lmdb, metadata_csv=args.val_metadata,
+        lmdb_path=args.val_lmdb, metadata_path=args.val_metadata,
     )
     if args.val_samples:
         import random

@@ -2,6 +2,7 @@
 import csv
 import lmdb
 import torch
+import pytest
 import numpy as np
 from pathlib import Path
 
@@ -111,3 +112,40 @@ class TestHow2SignLMDBDataset:
         ]
         batch = collate_variable_features(samples)
         assert batch["features"].shape == (1, 4, 768)
+
+    def test_constructor_uses_metadata_path_not_metadata_csv(self, tmp_path):
+        from src.data.how2sign_lmdb_dataset import How2SignLMDBDataset
+
+        env = _open_lmdb(tmp_path / "test.lmdb")
+        env.close()
+
+        meta_path = tmp_path / "meta.csv"
+        _write_metadata(meta_path, [])
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            How2SignLMDBDataset(lmdb_path=str(tmp_path / "test.lmdb"), metadata_csv=str(meta_path))
+
+    def test_dataset_configured_for_multiple_readers(self, tmp_path):
+        from src.data.how2sign_lmdb_dataset import How2SignLMDBDataset
+
+        env = _open_lmdb(tmp_path / "test.lmdb")
+        name = "clip_a"
+        feats = torch.randn(3, 768).half()
+        with env.begin(write=True) as txn:
+            for i in range(3):
+                txn.put(f"{name}/{i:07d}.np".encode("ascii"), feats[i].numpy().tobytes())
+            txn.put(f"{name}/done".encode("ascii"), b"1")
+        env.close()
+
+        meta_path = tmp_path / "meta.csv"
+        _write_metadata(meta_path, [{"SENTENCE_NAME": name, "SENTENCE": "hello world",
+                                      "PREV_SENTENCE": "", "VIDEO_NAME": "v1",
+                                      "START_REALIGNED": "0.0", "END_REALIGNED": "1.0"}])
+
+        from torch.utils.data import DataLoader
+        from src.data.how2sign_lmdb_dataset import collate_variable_features
+
+        ds = How2SignLMDBDataset(lmdb_path=str(tmp_path / "test.lmdb"), metadata_path=str(meta_path))
+        loader = DataLoader(ds, batch_size=1, collate_fn=collate_variable_features, num_workers=2)
+        batches = list(loader)
+        assert len(batches) == 1

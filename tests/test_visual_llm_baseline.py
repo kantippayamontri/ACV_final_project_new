@@ -99,3 +99,25 @@ class TestVisualLLMBaseline:
         assert isinstance(predictions, list)
         assert len(predictions) == 1
         assert isinstance(predictions[0], str)
+
+    def test_masked_padded_positions_do_not_change_loss(self, tmp_path):
+        from src.models.visual_llm_baseline import VisualLLMBaseline
+
+        llm_path = _make_fake_llm(tmp_path, hidden_size=64, vocab_size=200)
+        model = VisualLLMBaseline(pretrained_llm=llm_path, use_lora=False)
+
+        torch.manual_seed(0)
+        features = torch.randn(2, 3, 768)
+        targets = ["hello world", "test target"]
+
+        mask_a = torch.ones(2, 3, dtype=torch.bool)
+        loss_full = model.forward(features, mask_a, targets)
+
+        mask_b = mask_a.clone()
+        mask_b[1, 1:] = False
+        loss_masked = model.forward(features, mask_b, targets)
+
+        assert not torch.isnan(loss_full)
+        assert not torch.isnan(loss_masked)
+        assert torch.allclose(loss_full, loss_masked, atol=1e-2), \
+            f"Loss changed despite masking padded positions: {loss_full.item()} vs {loss_masked.item()}"
