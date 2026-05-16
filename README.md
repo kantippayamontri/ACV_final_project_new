@@ -191,6 +191,16 @@ Recommended starting point on this machine:
 - keep `--batch-size 1`
 - use gradient accumulation with `--grad-accum-steps 4`
 
+**TensorBoard Logging:**
+
+Training logs are automatically written to `<output-dir>/tensorboard`. To view:
+
+```bash
+tensorboard --logdir outputs/video_only_baseline/tensorboard
+```
+
+Then open the URL shown in your browser (usually `http://localhost:6006`).
+
 ### Suggested Commands
 
 #### Llama-3.2-1B
