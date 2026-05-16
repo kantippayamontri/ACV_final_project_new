@@ -6,6 +6,7 @@ import torch
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from src.data.how2sign_lmdb_dataset import How2SignLMDBDataset, collate_variable_features
 from src.models.visual_llm_baseline import VisualLLMBaseline
@@ -105,6 +106,8 @@ def main():
     set_seed(args.seed)
     output_dir = Path(args.output_dir)
 
+    writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
+
     print(f"Loading datasets...")
     train_dataset = How2SignLMDBDataset(
         lmdb_path=args.train_lmdb, metadata_path=args.train_metadata,
@@ -153,11 +156,14 @@ def main():
         train_loss = train_epoch(model, train_loader, optimizer, scaler, autocast,
                                  args.grad_accum_steps, args.device)
         print(f"Train loss: {train_loss:.4f}")
+        writer.add_scalar("train_loss", train_loss, epoch)
 
         val_metrics, val_preds, val_refs = validate_epoch(
             model, val_loader, args.max_new_tokens, args.device,
         )
         print(f"Val BLEU: {val_metrics['BLEU']:.2f}  ROUGE-L: {val_metrics['ROUGE-L']:.2f}")
+        writer.add_scalar("val_bleu", val_metrics["BLEU"], epoch)
+        writer.add_scalar("val_rouge", val_metrics["ROUGE-L"], epoch)
 
         epoch_metrics = {"epoch": epoch, "train_loss": train_loss, **val_metrics}
         all_metrics.append(epoch_metrics)
@@ -176,6 +182,7 @@ def main():
     save_checkpoint(model, optimizer, args.epochs, all_metrics[-1],
                    vars(args), output_dir / "last.pt")
     save_metrics_json(all_metrics, output_dir / "metrics.json")
+    writer.close()
     print(f"\nDone. Outputs saved to {output_dir}")
 
 

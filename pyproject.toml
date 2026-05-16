@@ -20,6 +20,7 @@ dependencies = [
     "sacrebleu>=2.4.0",
     "rouge-score>=0.1.2",
     "pytorch-lightning>=2.0.0",
+    "tensorboard>=2.14.0",
 ]
 
 [tool.uv]
