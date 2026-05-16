@@ -1,4 +1,5 @@
 """Training utilities: seeding, optimizer, checkpointing, epoch loops."""
+from contextlib import nullcontext
 import json
 import random
 import torch
@@ -18,12 +19,14 @@ def build_optimizer(model, lr: float, weight_decay: float = 0.01):
     return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
 
-def mixed_precision_context(precision: str):
-    """Context manager for autocast + GradScaler (fp16) or none (fp32)."""
+def mixed_precision_context(precision: str, device: str):
+    """Context manager for autocast + GradScaler (fp16) or a no-op context."""
     if precision == "fp16":
-        scaler = torch.amp.GradScaler('cuda')
-        return torch.amp.autocast('cuda', dtype=torch.float16), scaler
-    return None, None
+        if device.startswith("cuda"):
+            scaler = torch.amp.GradScaler("cuda")
+            return torch.amp.autocast("cuda", dtype=torch.float16), scaler
+        return nullcontext(), None
+    return nullcontext(), None
 
 
 def save_checkpoint(model, optimizer, epoch: int, metrics: dict, args: dict, path: Path):
@@ -38,11 +41,13 @@ def save_checkpoint(model, optimizer, epoch: int, metrics: dict, args: dict, pat
     torch.save(data, str(path))
 
 
-def load_checkpoint(model, optimizer, path: Path, device: str):
-    data = torch.load(str(path), map_location=device, weights_only=False)
+def load_checkpoint(model, optimizer, path: Path | None, device: str, checkpoint_data: dict | None = None):
+    data = checkpoint_data
+    if data is None:
+        data = torch.load(str(path), map_location=device, weights_only=False)
     model.load_state_dict(data["model_state"])
     optimizer.load_state_dict(data["optimizer_state"])
-    return data["epoch"], data["metrics"], data["args"]
+    return data["epoch"], data["metrics"], data.get("args", {})
 
 
 def save_metrics_json(metrics: dict, path: Path):

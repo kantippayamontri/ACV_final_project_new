@@ -63,42 +63,73 @@ class VisualLLMBaseline(nn.Module):
         )
         return tokenized["input_ids"], tokenized["attention_mask"]
 
-    def _build_inputs_embeds(self, projected: torch.Tensor, target_ids: torch.Tensor):
-        B = projected.shape[0]
+    def _build_sample_inputs(self, projected: torch.Tensor, mask: torch.Tensor,
+                             target_ids: torch.Tensor | None = None,
+                             target_mask: torch.Tensor | None = None):
         prompt_ids = self.tokenizer(
-            [PROMPT_TEMPLATE] * B, return_tensors="pt",
+            [PROMPT_TEMPLATE], return_tensors="pt",
             padding=True, truncation=True,
         ).input_ids.to(projected.device)
+        embedding_layer = self.llm.get_input_embeddings()
+        prompt_embeds = embedding_layer(prompt_ids)[0]
 
-        prompt_embeds = self.llm.get_input_embeddings()(prompt_ids)
-        target_embeds = self.llm.get_input_embeddings()(target_ids)
+        sample_embeds = []
+        sample_attn = []
+        sample_labels = []
 
-        inputs_embeds = torch.cat([prompt_embeds, projected, target_embeds], dim=1)
-        return inputs_embeds, prompt_ids, target_ids
+        for idx in range(projected.shape[0]):
+            valid_len = int(mask[idx].sum().item())
+            visual_embeds = projected[idx, :valid_len]
+            parts = [prompt_embeds, visual_embeds]
+            sample_len = prompt_embeds.shape[0] + valid_len
 
-    def _build_labels_mask(self, prompt_ids: torch.Tensor, projected_len: int,
-                           target_ids: torch.Tensor, device: torch.device):
-        B = prompt_ids.shape[0]
-        target_len = target_ids.shape[1]
-        total_len = prompt_ids.shape[1] + projected_len + target_len
+            if target_ids is not None and target_mask is not None:
+                valid_target_ids = target_ids[idx, target_mask[idx].bool()]
+                if valid_target_ids.numel() > 0:
+                    target_embeds = embedding_layer(valid_target_ids.unsqueeze(0))[0]
+                    parts.append(target_embeds)
+                else:
+                    valid_target_ids = target_ids.new_empty((0,))
 
-        labels = torch.full((B, total_len), -100, dtype=torch.long, device=device)
-        labels[:, prompt_ids.shape[1] + projected_len:] = target_ids
-        labels[:, prompt_ids.shape[1]:prompt_ids.shape[1] + projected_len] = -100
+                labels = torch.full(
+                    (sample_len + valid_target_ids.shape[0],),
+                    -100,
+                    dtype=torch.long,
+                    device=projected.device,
+                )
+                labels[sample_len:] = valid_target_ids
+                sample_labels.append(labels)
 
-        return labels
+            sample_input = torch.cat(parts, dim=0)
+            sample_embeds.append(sample_input)
+            sample_attn.append(torch.ones(sample_input.shape[0], dtype=torch.long, device=projected.device))
+
+        max_len = max(sample.shape[0] for sample in sample_embeds)
+        hidden_size = prompt_embeds.shape[-1]
+        inputs_embeds = projected.new_zeros((projected.shape[0], max_len, hidden_size))
+        attention_mask = torch.zeros((projected.shape[0], max_len), dtype=torch.long, device=projected.device)
+
+        labels = None
+        if sample_labels:
+            labels = torch.full((projected.shape[0], max_len), -100, dtype=torch.long, device=projected.device)
+
+        for idx, sample_input in enumerate(sample_embeds):
+            seq_len = sample_input.shape[0]
+            inputs_embeds[idx, :seq_len] = sample_input
+            attention_mask[idx, :seq_len] = sample_attn[idx]
+            if labels is not None:
+                labels[idx, :sample_labels[idx].shape[0]] = sample_labels[idx]
+
+        return inputs_embeds, attention_mask, labels
 
     def forward(self, features: torch.Tensor, mask: torch.Tensor, targets: list[str]):
         projected, _ = self.projector(features.float(), mask)
         projected = projected.to(dtype=self._llm_dtype)
         target_ids, target_mask = self._tokenize_targets(targets)
         target_ids = target_ids.to(features.device)
+        target_mask = target_mask.to(features.device)
 
-        inputs_embeds, prompt_ids, target_ids_tensor = self._build_inputs_embeds(projected, target_ids)
-        labels = self._build_labels_mask(prompt_ids, projected.shape[1], target_ids, features.device)
-
-        attn_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=features.device)
-        attn_mask[:, prompt_ids.shape[1]:prompt_ids.shape[1] + mask.shape[1]] = mask.long()
+        inputs_embeds, attn_mask, labels = self._build_sample_inputs(projected, mask, target_ids, target_mask)
 
         outputs = self.llm(inputs_embeds=inputs_embeds, attention_mask=attn_mask,
                           labels=labels)
@@ -109,18 +140,7 @@ class VisualLLMBaseline(nn.Module):
                  max_new_tokens: int = 128, **gen_kwargs):
         projected, _ = self.projector(features.float(), mask)
         projected = projected.to(dtype=self._llm_dtype)
-
-        B = projected.shape[0]
-        prompt_ids = self.tokenizer(
-            [PROMPT_TEMPLATE] * B, return_tensors="pt",
-            padding=True, truncation=True,
-        ).input_ids.to(features.device)
-
-        prompt_embeds = self.llm.get_input_embeddings()(prompt_ids)
-        inputs_embeds = torch.cat([prompt_embeds, projected], dim=1)
-
-        attn_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=features.device)
-        attn_mask[:, prompt_ids.shape[1]:prompt_ids.shape[1] + mask.shape[1]] = mask.long()
+        inputs_embeds, attn_mask, _ = self._build_sample_inputs(projected, mask)
 
         outputs = self.llm.generate(
             inputs_embeds=inputs_embeds,
@@ -132,4 +152,9 @@ class VisualLLMBaseline(nn.Module):
         )
 
         predictions = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        return predictions
+        cleaned_predictions = []
+        for prediction in predictions:
+            if prediction.startswith(PROMPT_TEMPLATE):
+                prediction = prediction[len(PROMPT_TEMPLATE):]
+            cleaned_predictions.append(prediction.strip())
+        return cleaned_predictions

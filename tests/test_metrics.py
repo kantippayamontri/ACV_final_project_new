@@ -1,8 +1,14 @@
 """Tests for training metrics."""
+import pytest
+
 from src.training.metrics import compute_metrics
 
 
 class TestMetrics:
+    def test_compute_metrics_rejects_empty_predictions(self):
+        with pytest.raises(ValueError, match="empty"):
+            compute_metrics([], [])
+
     def test_bleu_exact_match(self):
         preds = ["the cat sat on the mat"]
         refs = [["the cat sat on the mat"]]

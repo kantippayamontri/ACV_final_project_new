@@ -8,13 +8,27 @@ uv sync
 
 ## Download LLM
 
-Llama-3-8B is gated on HuggingFace. Request access at https://huggingface.co/meta-llama/Meta-Llama-3-8B, then:
+All Llama models are gated on HuggingFace. Request access first, then download with the scripts below.
+
+### Llama-3-8B
 
 ```bash
 HF_TOKEN=hf_xxxx uv run python scripts/download_llama.py
 ```
 
-Or override the output directory:
+### Llama-3.2-1B
+
+```bash
+HF_TOKEN=hf_xxxx uv run python scripts/download_llama32_1b.py
+```
+
+### Llama-3.2-3B
+
+```bash
+HF_TOKEN=hf_xxxx uv run python scripts/download_llama32_3b.py
+```
+
+Override output directory:
 
 ```bash
 uv run python scripts/download_llama.py --output-dir /path/to/save
@@ -115,11 +129,103 @@ Optional path overrides:
 - `--batch-size <int>`
 - `--map-size-gb <int>`
 
-## Train Phase 2 Baseline
+## Video-Only Training Recipe
 
-Train the visual-only baseline (VideoMAE features → projector → LoRA LLM decoder).
+Use this flow when you want to train the Phase 2 visual-only baseline end to end.
 
-LLM hidden size is automatically inferred from the pretrained model config.
+### Step 1: Extract train features
+
+Default train extraction command:
+
+```bash
+uv run python scripts/extract_features.py \
+  --split train \
+  --device cuda \
+  --batch-size 8
+```
+
+This writes:
+- `features/train_features.lmdb`
+- `features/train_metadata.csv`
+
+If the machine is offline but already has the VideoMAE cache locally:
+
+```bash
+HF_HOME=~/.cache/huggingface uv run python scripts/extract_features.py \
+  --split train \
+  --device cuda \
+  --batch-size 8
+```
+
+If you are not using `uv run`, make sure the repo root is on `PYTHONPATH`:
+
+```bash
+HF_HOME=~/.cache/huggingface PYTHONPATH=. python scripts/extract_features.py \
+  --split train \
+  --device cuda \
+  --batch-size 8
+```
+
+The extractor auto-resumes and skips clips that already have `{SENTENCE_NAME}/done` in the LMDB.
+
+### Step 2: Train the video-only baseline
+
+After `train_features.lmdb` and `train_metadata.csv` exist, run:
+
+```bash
+uv run python scripts/train_baseline.py \
+  --train-lmdb features/train_features.lmdb \
+  --train-metadata features/train_metadata.csv \
+  --val-lmdb features/val_features.lmdb \
+  --val-metadata features/val_metadata.csv \
+  --pretrained-llm models/Llama-3.2-1B \
+  --output-dir outputs/video_only_baseline \
+  --batch-size 1 \
+  --grad-accum-steps 4 \
+  --epochs 5 \
+  --device cuda
+```
+
+Recommended starting point on this machine:
+- use `models/Llama-3.2-1B`
+- keep `--batch-size 1`
+- use gradient accumulation with `--grad-accum-steps 4`
+
+### Suggested Commands
+
+#### Llama-3.2-1B
+
+```bash
+uv run python scripts/train_baseline.py \
+  --train-lmdb features/train_features.lmdb \
+  --train-metadata features/train_metadata.csv \
+  --val-lmdb features/val_features.lmdb \
+  --val-metadata features/val_metadata.csv \
+  --pretrained-llm models/Llama-3.2-1B \
+  --output-dir outputs/video_only_llama32_1b \
+  --batch-size 1 \
+  --grad-accum-steps 4 \
+  --epochs 5 \
+  --device cuda
+```
+
+#### Llama-3.2-3B
+
+```bash
+uv run python scripts/train_baseline.py \
+  --train-lmdb features/train_features.lmdb \
+  --train-metadata features/train_metadata.csv \
+  --val-lmdb features/val_features.lmdb \
+  --val-metadata features/val_metadata.csv \
+  --pretrained-llm models/Llama-3.2-3B \
+  --output-dir outputs/video_only_llama32_3b \
+  --batch-size 1 \
+  --grad-accum-steps 8 \
+  --epochs 5 \
+  --device cuda
+```
+
+#### Meta-Llama-3-8B
 
 ```bash
 uv run python scripts/train_baseline.py \
@@ -128,39 +234,57 @@ uv run python scripts/train_baseline.py \
   --val-lmdb features/val_features.lmdb \
   --val-metadata features/val_metadata.csv \
   --pretrained-llm models/Meta-Llama-3-8B \
-  --output-dir outputs/phase2-baseline \
+  --output-dir outputs/video_only_llama3_8b \
   --batch-size 1 \
-  --grad-accum-steps 4 \
+  --grad-accum-steps 8 \
   --epochs 5 \
   --device cuda
 ```
 
-Key options:
-- `--pretrained-llm` — path to a local HF-compatible LLM (default: `models/Meta-Llama-3-8B`)
-- `--lora-r` / `--lora-alpha` / `--lora-dropout` — LoRA configuration
-- `--precision` — `fp16` or `fp32`
-- `--max-new-tokens` — max tokens for validation generation (default: 128)
-- `--val-samples` — limit validation set size for faster eval
+#### Qwen Template
 
-Outputs per epoch (in `--output-dir`):
-- `best.pt` — checkpoint with best val BLEU
-- `last.pt` — final epoch checkpoint
-- `val_predictions_epoch{N}.jsonl` — validation predictions
-- `metrics.json` — full training metrics history
+```bash
+uv run python scripts/train_baseline.py \
+  --train-lmdb features/train_features.lmdb \
+  --train-metadata features/train_metadata.csv \
+  --val-lmdb features/val_features.lmdb \
+  --val-metadata features/val_metadata.csv \
+  --pretrained-llm /path/to/Qwen-model \
+  --output-dir outputs/video_only_qwen \
+  --batch-size 1 \
+  --grad-accum-steps 8 \
+  --epochs 5 \
+  --device cuda
+```
 
-## Evaluate Phase 2 Baseline
-
-Load a saved checkpoint and evaluate on any data split.
+### Step 3: Evaluate the trained checkpoint
 
 ```bash
 uv run python scripts/eval_baseline.py \
   --lmdb features/val_features.lmdb \
   --metadata features/val_metadata.csv \
-  --checkpoint outputs/phase2-baseline/best.pt \
-  --pretrained-llm models/Meta-Llama-3-8B \
-  --output-dir outputs/phase2-eval
+  --checkpoint outputs/video_only_baseline/best.pt \
+  --pretrained-llm models/Llama-3.2-1B \
+  --output-dir outputs/video_only_eval
 ```
 
-Outputs:
+## Phase 2 Reference
+
+The commands above are the recommended end-to-end workflow.
+
+Useful training options:
+- `--pretrained-llm` — path to a local HF-compatible LLM
+- `--lora-r` / `--lora-alpha` / `--lora-dropout` — LoRA configuration
+- `--precision` — `fp16` or `fp32`
+- `--max-new-tokens` — max tokens for validation generation
+- `--val-samples` — limit validation set size for faster eval
+
+Training outputs in `--output-dir`:
+- `best.pt` — checkpoint with best validation BLEU
+- `last.pt` — final epoch checkpoint
+- `val_predictions_epoch{N}.jsonl` — validation predictions
+- `metrics.json` — full training metrics history
+
+Evaluation outputs in `--output-dir`:
 - `predictions.jsonl` — all model predictions with references
 - `metrics.json` — BLEU and ROUGE-L scores

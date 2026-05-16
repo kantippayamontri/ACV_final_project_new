@@ -1,8 +1,9 @@
 # Project data and outputs
+docs/
 features/
 LiTFiC/
 datasets/
-models/
+/models/
 outputs/
 
 # Python-generated files

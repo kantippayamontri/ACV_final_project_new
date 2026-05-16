@@ -29,22 +29,40 @@ def parse_args():
 def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
+    checkpoint_path = Path(args.checkpoint)
 
     print(f"Loading dataset from {args.lmdb}...")
     dataset = How2SignLMDBDataset(lmdb_path=args.lmdb, metadata_path=args.metadata)
+    if len(dataset) == 0:
+        raise ValueError("Evaluation dataset is empty")
+
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False,
         collate_fn=collate_variable_features, num_workers=args.num_workers,
     )
     print(f"Samples: {len(dataset)}")
 
+    checkpoint_data = torch.load(str(checkpoint_path), map_location=args.device, weights_only=False)
+    train_args = checkpoint_data.get("args", {})
+
     print(f"Loading LLM from {args.pretrained_llm}...")
-    model = VisualLLMBaseline(pretrained_llm=args.pretrained_llm, use_lora=True)
+    model = VisualLLMBaseline(
+        pretrained_llm=args.pretrained_llm,
+        use_lora=True,
+        lora_r=train_args.get("lora_r", 8),
+        lora_alpha=train_args.get("lora_alpha", 16),
+        lora_dropout=train_args.get("lora_dropout", 0.1),
+    )
     model = model.to(args.device)
 
     optimizer = build_optimizer(model, lr=0.0)
-    checkpoint_path = Path(args.checkpoint)
-    epoch, metrics, train_args = load_checkpoint(model, optimizer, checkpoint_path, args.device)
+    epoch, metrics, train_args = load_checkpoint(
+        model,
+        optimizer,
+        checkpoint_path,
+        args.device,
+        checkpoint_data=checkpoint_data,
+    )
     print(f"Loaded checkpoint from epoch {epoch}, BLEU: {metrics.get('BLEU', 'N/A')}")
 
     model.eval()

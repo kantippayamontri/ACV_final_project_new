@@ -4,6 +4,9 @@ from rouge_score import rouge_scorer
 
 
 def compute_metrics(predictions: list[str], references: list[list[str]]):
+    if not predictions:
+        raise ValueError("Cannot compute metrics on empty predictions")
+
     scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
 
     bleu = corpus_bleu(predictions, references).score

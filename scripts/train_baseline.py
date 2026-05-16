@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Train the visual-only baseline: VideoMAE features -> projector -> LoRA LLM decoder."""
 import argparse
+from contextlib import nullcontext
 import torch
 from pathlib import Path
 from tqdm import tqdm
@@ -51,7 +52,7 @@ def train_epoch(model, loader, optimizer, scaler, autocast, grad_accum_steps, de
         mask = batch["attention_mask"].to(device)
         targets = batch["target_texts"]
 
-        with autocast if autocast else torch.no_grad():
+        with (autocast or nullcontext()):
             loss = model.forward(features, mask, targets)
             loss = loss / grad_accum_steps
 
@@ -69,6 +70,14 @@ def train_epoch(model, loader, optimizer, scaler, autocast, grad_accum_steps, de
             optimizer.zero_grad()
 
         total_loss += loss.item() * grad_accum_steps
+
+    if len(loader) > 0 and len(loader) % grad_accum_steps != 0:
+        if scaler:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        optimizer.zero_grad()
 
     return total_loss / max(len(loader), 1)
 
@@ -107,6 +116,8 @@ def main():
         import random
         indices = random.sample(range(len(val_dataset)), min(args.val_samples, len(val_dataset)))
         val_dataset = torch.utils.data.Subset(val_dataset, indices)
+    if len(val_dataset) == 0:
+        raise ValueError("Validation dataset is empty")
 
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
@@ -131,7 +142,7 @@ def main():
     model = model.to(args.device)
 
     optimizer = build_optimizer(model, lr=args.lr)
-    autocast, scaler = mixed_precision_context(args.precision)
+    autocast, scaler = mixed_precision_context(args.precision, args.device)
 
     best_bleu = 0.0
     all_metrics = []
