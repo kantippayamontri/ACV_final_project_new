@@ -27,6 +27,25 @@ def load_video_frames(video_path: str) -> np.ndarray:
     return frames
 
 
+def resize_frames(frames: np.ndarray, target_size: int = 224) -> np.ndarray:
+    """Resize all frames to target_size x target_size.
+
+    Uses BILINEAR interpolation (same as VideoMAE preprocessing) so extracted
+    features are identical to the old per-window resize path, but peak RAM drops
+    ~18x because the heavy full-resolution frame array is replaced in-place.
+    """
+    n_frames = len(frames)
+    resized = np.empty((n_frames, target_size, target_size, 3), dtype=np.uint8)
+    for i in range(n_frames):
+        pil_img = Image.fromarray(frames[i])
+        pil_img = TF.resize(
+            pil_img, (target_size, target_size),
+            interpolation=TF.InterpolationMode.BILINEAR,
+        )
+        resized[i] = np.array(pil_img)
+    return resized
+
+
 def sliding_windows(
     frames: np.ndarray,
     window_size: int = 16,
@@ -68,8 +87,9 @@ def preprocess_window(window: np.ndarray) -> torch.Tensor:
     
     for frame in window:
         pil_img = Image.fromarray(frame)
-        resized = TF.resize(pil_img, (FRAME_SIZE, FRAME_SIZE), interpolation=TF.InterpolationMode.BILINEAR)
-        tensor = TF.to_tensor(resized)
+        if pil_img.size != (FRAME_SIZE, FRAME_SIZE):
+            pil_img = TF.resize(pil_img, (FRAME_SIZE, FRAME_SIZE), interpolation=TF.InterpolationMode.BILINEAR)
+        tensor = TF.to_tensor(pil_img)
         tensor = TF.normalize(tensor, mean=VIDEO_MEAN, std=VIDEO_STD)
         processed_frames.append(tensor)
     

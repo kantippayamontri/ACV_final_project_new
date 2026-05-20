@@ -10,7 +10,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.dataset.preprocessing import load_video_frames, sliding_windows, preprocess_window
+from src.dataset.preprocessing import load_video_frames, resize_frames, sliding_windows, preprocess_window
 from transformers import VideoMAEModel
 
 def load_model(device):
@@ -65,6 +65,7 @@ def main():
             continue
         
         frames = load_video_frames(str(video_path))
+        frames = resize_frames(frames)
         windows = list(sliding_windows(frames, window_size=16, stride=2))
         
         if len(windows) == 0:

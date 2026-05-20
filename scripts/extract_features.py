@@ -14,7 +14,7 @@ import torch
 from pathlib import Path
 from tqdm import tqdm
 from transformers import VideoMAEModel
-from src.dataset.preprocessing import load_video_frames, sliding_windows, preprocess_window
+from src.dataset.preprocessing import load_video_frames, resize_frames, sliding_windows, preprocess_window
 
 
 VIDEO_MODEL_NAME = "MCG-NJU/videomae-base-finetuned-kinetics"
@@ -146,6 +146,7 @@ def extract_features(
         torch.Tensor of shape [T, 768]
     """
     frames = load_video_frames(str(video_path))
+    frames = resize_frames(frames)
     windows = sliding_windows(frames, window_size=WINDOW_SIZE, stride=STRIDE)
     
     if len(windows) == 0:
