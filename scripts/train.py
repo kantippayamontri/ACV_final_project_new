@@ -25,6 +25,8 @@ def parse_args():
     parser.add_argument("--pretrained-llm", type=str, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--val-batch-size", type=int, default=None,
+                        help="Validation batch size (defaults to --batch-size)")
     parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=2e-4)
@@ -51,6 +53,7 @@ def main():
         val_lmdb=args.val_lmdb,
         val_metadata=args.val_metadata,
         batch_size=args.batch_size,
+        val_batch_size=args.val_batch_size,
         num_workers=args.num_workers,
         val_samples=args.val_samples,
     )

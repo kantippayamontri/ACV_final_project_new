@@ -16,6 +16,7 @@ class How2SignDataModule(LightningDataModule):
         val_lmdb: str,
         val_metadata: str,
         batch_size: int = 2,
+        val_batch_size: int | None = None,
         num_workers: int = 0,
         val_samples: int | None = None,
     ):
@@ -27,6 +28,7 @@ class How2SignDataModule(LightningDataModule):
         self.val_lmdb = val_lmdb
         self.val_metadata = val_metadata
         self.batch_size = batch_size
+        self.val_batch_size = val_batch_size or batch_size
         self.num_workers = num_workers
         self.val_samples = val_samples
 
@@ -64,7 +66,7 @@ class How2SignDataModule(LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.val_batch_size,
             shuffle=False,
             collate_fn=collate_variable_features,
             num_workers=self.num_workers,

@@ -12,7 +12,7 @@ from src.data.how2sign_lmdb_dataset import How2SignLMDBDataset, collate_variable
 from src.models.visual_llm_baseline import VisualLLMBaseline
 from src.training.train_utils import (
     set_seed, build_optimizer, mixed_precision_context,
-    save_checkpoint, save_metrics_json, save_predictions_jsonl,
+    save_checkpoint, load_checkpoint, save_metrics_json, save_predictions_jsonl,
 )
 from src.training.metrics import compute_metrics
 
@@ -42,6 +42,8 @@ def parse_args():
     parser.add_argument("--save-every-epoch", action="store_true")
     parser.add_argument("--val-samples", type=int, default=None,
                         help="Limit validation set size for faster eval")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Resume from a checkpoint path (e.g. outputs/run/best.pt)")
     return parser.parse_args()
 
 
@@ -150,10 +152,25 @@ def main():
     optimizer = build_optimizer(model, lr=args.lr)
     autocast, scaler = mixed_precision_context(args.precision, args.device)
 
+    start_epoch = 1
     best_bleu = 0.0
     all_metrics = []
 
-    for epoch in range(1, args.epochs + 1):
+    if args.resume:
+        print(f"Resuming from {args.resume}...")
+        loaded_epoch, loaded_metrics, _ = load_checkpoint(
+            model, optimizer, Path(args.resume), args.device,
+        )
+        start_epoch = loaded_epoch + 1
+        best_bleu = loaded_metrics.get("BLEU", 0.0)
+        metrics_path = output_dir / "metrics.json"
+        if metrics_path.exists():
+            import json
+            with open(metrics_path) as f:
+                all_metrics = json.load(f)
+        print(f"Resuming from epoch {start_epoch} (best BLEU: {best_bleu:.2f})")
+
+    for epoch in range(start_epoch, args.epochs + 1):
         print(f"\n=== Epoch {epoch}/{args.epochs} ===")
 
         train_loss = train_epoch(model, train_loader, optimizer, scaler, autocast,
