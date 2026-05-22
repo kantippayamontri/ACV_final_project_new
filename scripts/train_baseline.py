@@ -26,6 +26,8 @@ def parse_args():
     parser.add_argument("--pretrained-llm", type=str, required=True)
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--val-batch-size", type=int, default=None,
+                        help="Validation batch size (defaults to --batch-size)")
     parser.add_argument("--grad-accum-steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=2e-4)
@@ -126,8 +128,9 @@ def main():
         train_dataset, batch_size=args.batch_size, shuffle=True,
         collate_fn=collate_variable_features, num_workers=args.num_workers,
     )
+    val_batch_size = args.val_batch_size or args.batch_size
     val_loader = DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False,
+        val_dataset, batch_size=val_batch_size, shuffle=False,
         collate_fn=collate_variable_features, num_workers=args.num_workers,
     )
 
