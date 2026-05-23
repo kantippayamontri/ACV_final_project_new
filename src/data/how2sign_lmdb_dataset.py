@@ -13,8 +13,9 @@ FEATURE_DIM = 768
 class How2SignLMDBDataset(Dataset):
     """Loads sentence-level VideoMAE features from LMDB and targets from metadata."""
 
-    def __init__(self, lmdb_path: str, metadata_path: str):
+    def __init__(self, lmdb_path: str, metadata_path: str, include_prev_text: bool = False):
         super().__init__()
+        self.include_prev_text = include_prev_text
         raw = self._load_metadata(metadata_path)
         self.env = lmdb.open(lmdb_path, readonly=True, subdir=False, lock=False,
                              max_readers=126, meminit=False)
@@ -63,12 +64,15 @@ class How2SignLMDBDataset(Dataset):
         name = row["SENTENCE_NAME"]
         feats = self._read_features(name)
 
-        return {
+        item = {
             "sentence_name": name,
             "features": feats.half(),
             "attention_mask": torch.ones(feats.shape[0], dtype=torch.bool),
             "target_text": row["SENTENCE"],
         }
+        if self.include_prev_text:
+            item["prev_text"] = row.get("PREV_SENTENCE") or ""
+        return item
 
     def __del__(self):
         if hasattr(self, "env"):
@@ -91,9 +95,12 @@ def collate_variable_features(samples: list):
         padded_feats[i, :t] = f
         padded_masks[i, :t] = m
 
-    return {
+    batch = {
         "features": padded_feats,
         "attention_mask": padded_masks,
         "target_texts": texts,
         "sentence_names": names,
     }
+    if "prev_text" in samples[0]:
+        batch["prev_texts"] = [s.get("prev_text", "") for s in samples]
+    return batch

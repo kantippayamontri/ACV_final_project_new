@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Train the video + previous-sentence baseline: features + context -> LoRA LLM decoder.
+
+Usage:
+    PYTHONPATH=. uv run python scripts/train_video_prev.py \\
+        --train-lmdb features/train_features.lmdb \\
+        --train-metadata features/train_metadata.csv \\
+        --val-lmdb features/val_features.lmdb \\
+        --val-metadata features/val_metadata.csv \\
+        --pretrained-llm models/Llama-3.2-1B \\
+        --output-dir outputs/video_prev_run
+
+    # With mixed GT/predicted previous sentences:
+    PYTHONPATH=. uv run python scripts/train_video_prev.py \\
+        --train-lmdb features/train_features.lmdb \\
+        --train-metadata features/train_metadata.csv \\
+        --val-lmdb features/val_features.lmdb \\
+        --val-metadata features/val_metadata.csv \\
+        --pretrained-llm models/Llama-3.2-1B \\
+        --output-dir outputs/video_prev_mixed \\
+        --prev-predictions outputs/video_prev_run/train_prev_predictions.json \\
+        --prev-gt-ratio 0.5
+"""
+import argparse
+import json
+import random
+from contextlib import nullcontext
+import torch
+from pathlib import Path
+from tqdm import tqdm
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+
+from src.data.how2sign_lmdb_dataset import How2SignLMDBDataset, collate_variable_features
+from src.models.visual_prev_llm import VideoPrevLLM
+from src.training.train_utils import (
+    set_seed, build_optimizer, mixed_precision_context,
+    save_checkpoint, load_checkpoint, save_metrics_json, save_predictions_jsonl,
+)
+from src.training.metrics import compute_metrics
+
+
+def mix_prev_texts(prev_texts, sentence_names, prev_predictions, prev_gt_ratio, random_values=None):
+    if prev_predictions is None:
+        return list(prev_texts)
+
+    mixed_prev_texts = []
+    for prev_text, sentence_name in zip(prev_texts, sentence_names):
+        draw = next(random_values) if random_values is not None else random.random()
+        if draw < prev_gt_ratio:
+            mixed_prev_texts.append(prev_text)
+        else:
+            mixed_prev_texts.append(prev_predictions.get(sentence_name, ""))
+    return mixed_prev_texts
+
+
+def validate_prev_gt_ratio(value: float):
+    if 0.0 <= value <= 1.0:
+        return value
+    raise ValueError("--prev-gt-ratio must be between 0.0 and 1.0")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Train video + previous-sentence baseline")
+    parser.add_argument("--train-lmdb", type=str, required=True)
+    parser.add_argument("--train-metadata", type=str, required=True)
+    parser.add_argument("--val-lmdb", type=str, required=True)
+    parser.add_argument("--val-metadata", type=str, required=True)
+    parser.add_argument("--pretrained-llm", type=str, required=True)
+    parser.add_argument("--output-dir", type=str, required=True)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--val-batch-size", type=int, default=None,
+                        help="Validation batch size (defaults to --batch-size)")
+    parser.add_argument("--grad-accum-steps", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--precision", type=str, default="fp16")
+    parser.add_argument("--lora-r", type=int, default=8)
+    parser.add_argument("--lora-alpha", type=int, default=16)
+    parser.add_argument("--lora-dropout", type=float, default=0.1)
+    parser.add_argument("--save-every-epoch", action="store_true")
+    parser.add_argument("--val-samples", type=int, default=None,
+                        help="Limit validation set size for faster eval")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Resume from a checkpoint path (e.g. outputs/run/best.pt)")
+    parser.add_argument("--prev-predictions", type=str, default=None,
+                        help="JSON file with previous-sentence predictions keyed by sentence name")
+    parser.add_argument("--prev-gt-ratio", type=float, default=1.0,
+                        help="Probability of using ground-truth previous text during training")
+    return parser.parse_args(argv)
+
+
+def train_epoch(model, loader, optimizer, scaler, autocast, grad_accum_steps, device,
+                prev_predictions=None, prev_gt_ratio=1.0):
+    model.train()
+    total_loss = 0.0
+    optimizer.zero_grad()
+
+    for step, batch in enumerate(tqdm(loader, desc="Train", leave=False)):
+        features = batch["features"].to(device)
+        mask = batch["attention_mask"].to(device)
+        targets = batch["target_texts"]
+        prev_texts = mix_prev_texts(
+            prev_texts=batch.get("prev_texts", [""] * len(targets)),
+            sentence_names=batch["sentence_names"],
+            prev_predictions=prev_predictions,
+            prev_gt_ratio=prev_gt_ratio,
+        )
+
+        with (autocast or nullcontext()):
+            loss = model.forward(features, mask, prev_texts, targets)
+            loss = loss / grad_accum_steps
+
+        if scaler:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        if (step + 1) % grad_accum_steps == 0:
+            if scaler:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
+
+        total_loss += loss.item() * grad_accum_steps
+
+    if len(loader) > 0 and len(loader) % grad_accum_steps != 0:
+        if scaler:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        optimizer.zero_grad()
+
+    return total_loss / max(len(loader), 1)
+
+
+def validate_epoch(model, loader, max_new_tokens, device):
+    model.eval()
+    all_predictions = []
+    all_references = []
+
+    for batch in tqdm(loader, desc="Val", leave=False):
+        features = batch["features"].to(device)
+        mask = batch["attention_mask"].to(device)
+        targets = batch["target_texts"]
+        prev_texts = batch.get("prev_texts", [""] * len(targets))
+
+        predictions = model.generate(features, mask, prev_texts, max_new_tokens=max_new_tokens)
+        all_predictions.extend(predictions)
+        all_references.extend([[t] for t in targets])
+
+    metrics = compute_metrics(all_predictions, all_references)
+    return metrics, all_predictions, all_references
+
+
+def main():
+    args = parse_args()
+    validate_prev_gt_ratio(args.prev_gt_ratio)
+    set_seed(args.seed)
+    output_dir = Path(args.output_dir)
+    prev_predictions = None
+
+    if args.prev_gt_ratio < 1.0:
+        if not args.prev_predictions:
+            raise ValueError("--prev-predictions is required when --prev-gt-ratio is below 1.0")
+        with open(args.prev_predictions) as f:
+            prev_predictions = json.load(f)
+
+    writer = SummaryWriter(log_dir=str(output_dir / "tensorboard"))
+
+    print(f"Loading datasets...")
+    train_dataset = How2SignLMDBDataset(
+        lmdb_path=args.train_lmdb, metadata_path=args.train_metadata,
+        include_prev_text=True,
+    )
+    val_dataset = How2SignLMDBDataset(
+        lmdb_path=args.val_lmdb, metadata_path=args.val_metadata,
+        include_prev_text=True,
+    )
+    if args.val_samples:
+        import random
+        indices = random.sample(range(len(val_dataset)), min(args.val_samples, len(val_dataset)))
+        val_dataset = torch.utils.data.Subset(val_dataset, indices)
+    if len(val_dataset) == 0:
+        raise ValueError("Validation dataset is empty")
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True,
+        collate_fn=collate_variable_features, num_workers=args.num_workers,
+    )
+    val_batch_size = args.val_batch_size or args.batch_size
+    val_loader = DataLoader(
+        val_dataset, batch_size=val_batch_size, shuffle=False,
+        collate_fn=collate_variable_features, num_workers=args.num_workers,
+    )
+
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+
+    print(f"Loading LLM from {args.pretrained_llm}...")
+    model = VideoPrevLLM(
+        pretrained_llm=args.pretrained_llm,
+        use_lora=True,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+    )
+    print(f"LLM hidden size: {model.llm_hidden_size}")
+    model = model.to(args.device)
+
+    optimizer = build_optimizer(model, lr=args.lr)
+    autocast, scaler = mixed_precision_context(args.precision, args.device)
+
+    start_epoch = 1
+    best_bleu = 0.0
+    all_metrics = []
+
+    if args.resume:
+        print(f"Resuming from {args.resume}...")
+        loaded_epoch, loaded_metrics, _ = load_checkpoint(
+            model, optimizer, Path(args.resume), args.device,
+        )
+        start_epoch = loaded_epoch + 1
+        best_bleu = loaded_metrics.get("BLEU", 0.0)
+        metrics_path = output_dir / "metrics.json"
+        if metrics_path.exists():
+            with open(metrics_path) as f:
+                all_metrics = json.load(f)
+        print(f"Resuming from epoch {start_epoch} (best BLEU: {best_bleu:.2f})")
+
+    for epoch in range(start_epoch, args.epochs + 1):
+        print(f"\n=== Epoch {epoch}/{args.epochs} ===")
+
+        train_loss = train_epoch(model, train_loader, optimizer, scaler, autocast,
+                                 args.grad_accum_steps, args.device,
+                                 prev_predictions=prev_predictions,
+                                 prev_gt_ratio=args.prev_gt_ratio)
+        print(f"Train loss: {train_loss:.4f}")
+        writer.add_scalar("train_loss", train_loss, epoch)
+
+        val_metrics, val_preds, val_refs = validate_epoch(
+            model, val_loader, args.max_new_tokens, args.device,
+        )
+        print(f"Val BLEU: {val_metrics['BLEU']:.2f}  ROUGE-L: {val_metrics['ROUGE-L']:.2f}")
+        writer.add_scalar("val_bleu", val_metrics["BLEU"], epoch)
+        writer.add_scalar("val_rouge", val_metrics["ROUGE-L"], epoch)
+
+        epoch_metrics = {"epoch": epoch, "train_loss": train_loss, **val_metrics}
+        all_metrics.append(epoch_metrics)
+
+        if val_metrics["BLEU"] > best_bleu:
+            best_bleu = val_metrics["BLEU"]
+            save_checkpoint(model, optimizer, epoch, val_metrics,
+                           vars(args), output_dir / "best.pt")
+
+        if args.save_every_epoch:
+            save_checkpoint(model, optimizer, epoch, val_metrics,
+                           vars(args), output_dir / f"epoch_{epoch}.pt")
+
+        save_predictions_jsonl(val_preds, val_refs, output_dir / f"val_predictions_epoch{epoch}.jsonl")
+
+    save_checkpoint(model, optimizer, args.epochs, all_metrics[-1],
+                   vars(args), output_dir / "last.pt")
+    save_metrics_json(all_metrics, output_dir / "metrics.json")
+    writer.close()
+    print(f"\nDone. Outputs saved to {output_dir}")
+
+
+if __name__ == "__main__":
+    main()
