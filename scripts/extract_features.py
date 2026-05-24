@@ -3,9 +3,10 @@
 Extract video features from How2Sign videos using VideoMAE (frozen).
 
 Usage:
-    python scripts/extract_features.py --split val
-    python scripts/extract_features.py --split train
-    python scripts/extract_features.py --split test
+    PYTHONPATH=. uv run python scripts/extract_features.py --split train
+    PYTHONPATH=. uv run python scripts/extract_features.py --split val
+    PYTHONPATH=. uv run python scripts/extract_features.py --split test
+    PYTHONPATH=. uv run python scripts/extract_features.py --split train --max-samples 1000
 """
 import argparse
 import csv
@@ -42,6 +43,8 @@ def parse_args():
                         help="LMDB map size in GB (50GB should be enough for train)")
     parser.add_argument("--batch-size", type=int, default=8,
                         help="Batch size for VideoMAE inference")
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="Limit extraction to first N sentences from the CSV")
     return parser.parse_args()
 
 
@@ -286,6 +289,10 @@ def main():
     
     rows = load_csv(csv_path)
     print(f"Loaded {len(rows)} sentences from CSV")
+    
+    if args.max_samples is not None:
+        rows = rows[:args.max_samples]
+        print(f"Limited to first {len(rows)} sentences (--max-samples={args.max_samples})")
     
     save_metadata(rows, output_metadata)
     print(f"Saved metadata to {output_metadata}")

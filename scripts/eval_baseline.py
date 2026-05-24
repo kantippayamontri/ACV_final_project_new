@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Evaluate a saved visual-only baseline checkpoint."""
+"""Evaluate a saved visual-only baseline checkpoint.
+
+Usage:
+    PYTHONPATH=. uv run python scripts/eval_baseline.py \\
+        --lmdb features/val_features.lmdb \\
+        --metadata features/val_metadata.csv \\
+        --checkpoint outputs/video_only_run/best.pt \\
+        --pretrained-llm models/Llama-3.2-1B \\
+        --output-dir outputs/video_only_run/eval
+"""
 import argparse
 import torch
 from pathlib import Path
