@@ -202,6 +202,44 @@ def test_generate_predictions_moves_inputs_to_requested_device(tmp_path, monkeyp
     assert json.loads(output_path.read_text()) == {"s1": ""}
 
 
+def test_generate_predictions_creates_output_parent_directory(tmp_path, monkeypatch):
+    from scripts import generate_prev_predictions
+
+    metadata_path = tmp_path / "metadata.csv"
+    _write_metadata(
+        metadata_path,
+        [
+            {"VIDEO_NAME": "vid1", "SENTENCE_NAME": "s1", "SENTENCE": "a", "PREV_SENTENCE": "", "START_REALIGNED": "0"},
+        ],
+    )
+
+    class FakeModel:
+        def generate(self, features, mask, prev_texts, max_new_tokens=128):
+            return ["pred-1"]
+
+    monkeypatch.setattr(generate_prev_predictions, "load_model", lambda args: FakeModel())
+    monkeypatch.setattr(generate_prev_predictions.lmdb, "open", lambda *a, **kw: type("MockEnv", (), {"close": lambda self: None})())
+    monkeypatch.setattr(
+        generate_prev_predictions,
+        "read_features",
+        lambda env, sentence_name: torch.ones(2, 768),
+    )
+
+    output_path = tmp_path / "nested" / "predictions" / "predictions.json"
+    args = generate_prev_predictions.parse_args([
+        "--lmdb", "ignored.lmdb",
+        "--metadata", str(metadata_path),
+        "--checkpoint", "ignored.pt",
+        "--pretrained-llm", "ignored-llm",
+        "--output", str(output_path),
+    ])
+
+    generate_prev_predictions.run(args)
+
+    assert output_path.exists()
+    assert json.loads(output_path.read_text()) == {"s1": ""}
+
+
 def test_load_model_uses_lora_args_saved_in_checkpoint(tmp_path, monkeypatch):
     from scripts import generate_prev_predictions
 

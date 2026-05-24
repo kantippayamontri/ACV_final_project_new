@@ -115,7 +115,9 @@ def run(args):
             )[0]
             previous_prediction = output
 
-        Path(args.output).write_text(json.dumps(predictions, indent=2))
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(predictions, indent=2))
         print(f"Saved {len(predictions)} predictions to {args.output}")
     finally:
         env.close()
