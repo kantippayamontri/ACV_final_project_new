@@ -36,11 +36,14 @@ def test_generate_predictions_store_previous_sentence_prediction_per_row(tmp_pat
             calls.append(prev_texts[0])
             return [f"pred-{len(calls)}"]
 
+    mock_env = type("MockEnv", (), {"close": lambda self: None})()
+
     monkeypatch.setattr(generate_prev_predictions, "load_model", lambda args: FakeModel())
+    monkeypatch.setattr(generate_prev_predictions.lmdb, "open", lambda *a, **kw: mock_env)
     monkeypatch.setattr(
         generate_prev_predictions,
         "read_features",
-        lambda lmdb_path, sentence_name: torch.ones(2, 768),
+        lambda env, sentence_name: torch.ones(2, 768),
     )
 
     output_path = tmp_path / "predictions.json"
@@ -82,11 +85,14 @@ def test_generate_predictions_resets_prev_text_per_video(tmp_path, monkeypatch):
             calls.append(prev_texts[0])
             return [f"pred-{len(calls)}"]
 
+    mock_env = type("MockEnv", (), {"close": lambda self: None})()
+
     monkeypatch.setattr(generate_prev_predictions, "load_model", lambda args: FakeModel())
+    monkeypatch.setattr(generate_prev_predictions.lmdb, "open", lambda *a, **kw: mock_env)
     monkeypatch.setattr(
         generate_prev_predictions,
         "read_features",
-        lambda lmdb_path, sentence_name: torch.ones(2, 768),
+        lambda env, sentence_name: torch.ones(2, 768),
     )
 
     output_path = tmp_path / "predictions.json"
@@ -128,12 +134,13 @@ def test_generate_predictions_resets_prev_text_after_missing_features(tmp_path, 
             calls.append(prev_texts[0])
             return [f"pred-{len(calls)}"]
 
-    def fake_read_features(lmdb_path, sentence_name):
+    def fake_read_features(env, sentence_name):
         if sentence_name == "s2":
             return torch.empty(0, 768)
         return torch.ones(2, 768)
 
     monkeypatch.setattr(generate_prev_predictions, "load_model", lambda args: FakeModel())
+    monkeypatch.setattr(generate_prev_predictions.lmdb, "open", lambda *a, **kw: type("MockEnv", (), {"close": lambda self: None})())
     monkeypatch.setattr(generate_prev_predictions, "read_features", fake_read_features)
 
     output_path = tmp_path / "predictions.json"
@@ -173,10 +180,11 @@ def test_generate_predictions_moves_inputs_to_requested_device(tmp_path, monkeyp
             return ["pred-meta"]
 
     monkeypatch.setattr(generate_prev_predictions, "load_model", lambda args: FakeModel())
+    monkeypatch.setattr(generate_prev_predictions.lmdb, "open", lambda *a, **kw: type("MockEnv", (), {"close": lambda self: None})())
     monkeypatch.setattr(
         generate_prev_predictions,
         "read_features",
-        lambda lmdb_path, sentence_name: torch.ones(2, 768),
+        lambda env, sentence_name: torch.ones(2, 768),
     )
 
     output_path = tmp_path / "predictions.json"
@@ -255,10 +263,11 @@ def test_read_features_returns_empty_tensor_when_sentence_missing(tmp_path):
     env = lmdb.open(str(lmdb_path), map_size=1 << 20, subdir=False)
     with env.begin(write=True) as txn:
         txn.put(b"present/0000000.np", np.ones(768, dtype=np.float16).tobytes())
-    env.close()
 
-    missing = read_features(str(lmdb_path), "missing")
-    present = read_features(str(lmdb_path), "present")
+    missing = read_features(env, "missing")
+    present = read_features(env, "present")
+
+    env.close()
 
     assert missing.shape == (0, 768)
     assert present.shape == (1, 768)
