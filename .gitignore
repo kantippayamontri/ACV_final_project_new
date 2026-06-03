@@ -6,6 +6,8 @@ datasets/
 /models/
 outputs/
 
+results_table.csv
+
 # Python-generated files
 __pycache__/
 *.py[cod]

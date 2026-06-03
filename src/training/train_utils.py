@@ -33,7 +33,7 @@ def save_checkpoint(model, optimizer, epoch: int, metrics: dict, args: dict, pat
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "epoch": epoch,
-        "model_state": {k: v.clone() for k, v in model.state_dict().items()},
+        "model_state": {k: v.cpu().clone() for k, v in model.state_dict().items()},
         "optimizer_state": optimizer.state_dict(),
         "metrics": metrics,
         "args": args,
