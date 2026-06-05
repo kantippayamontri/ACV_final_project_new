@@ -8,6 +8,15 @@ Usage:
         --checkpoint outputs/video_prev_run/best.pt \\
         --pretrained-llm models/Llama-3.2-1B \\
         --output outputs/video_prev_run/train_prev_predictions.json
+
+    # With 4-bit quantization for large models (8B):
+    PYTHONPATH=. uv run python scripts/generate_prev_predictions.py \\
+        --lmdb features/train_features.lmdb \\
+        --metadata features/train_metadata.csv \\
+        --checkpoint outputs/video_prev_run/best.pt \\
+        --pretrained-llm models/Meta-Llama-3-8B \\
+        --output outputs/video_prev_run/train_prev_predictions.json \\
+        --load-in-4bit
 """
 import argparse
 import csv
@@ -35,6 +44,8 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--load-in-4bit", action="store_true",
+                        help="Load LLM in 4-bit quantization (reduces VRAM for 8B+ models)")
     return parser.parse_args(argv)
 
 
@@ -45,7 +56,7 @@ def load_model(args):
     model = VideoPrevLLM(
         pretrained_llm=args.pretrained_llm,
         use_lora=True,
-        load_in_4bit=True,
+        load_in_4bit=args.load_in_4bit,
         lora_r=train_args.get("lora_r", 8),
         lora_alpha=train_args.get("lora_alpha", 16),
         lora_dropout=train_args.get("lora_dropout", 0.1),

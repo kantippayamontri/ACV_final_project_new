@@ -1,7 +1,7 @@
 """Visual-only LLM baseline: projector + LoRA decoder + training/generation."""
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, TaskType
 from src.models.projector import VisualProjector
 
@@ -37,10 +37,12 @@ class VisualLLMBaseline(nn.Module):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        llm_kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
+        llm_kwargs = {"dtype": torch.float16, "device_map": "auto"}
         if load_in_4bit:
-            llm_kwargs["load_in_4bit"] = True
-            llm_kwargs["bnb_4bit_compute_dtype"] = torch.float16
+            llm_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            )
         self.llm = AutoModelForCausalLM.from_pretrained(pretrained_llm, **llm_kwargs)
         self.llm.requires_grad_(False)
         self._llm_dtype = next(self.llm.parameters()).dtype
