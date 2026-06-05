@@ -36,7 +36,7 @@ class VisualLLMBaseline(nn.Module):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.llm = AutoModelForCausalLM.from_pretrained(pretrained_llm, torch_dtype=torch.float16)
+        self.llm = AutoModelForCausalLM.from_pretrained(pretrained_llm, torch_dtype=torch.float16, device_map="auto")
         self.llm.requires_grad_(False)
         self._llm_dtype = next(self.llm.parameters()).dtype
 
@@ -55,6 +55,7 @@ class VisualLLMBaseline(nn.Module):
             output_dim=self.llm_hidden_size,
             num_layers=projector_layers,
         )
+        self.projector = self.projector.to(self.llm.device)
 
     def _tokenize_targets(self, targets: list[str], max_length: int = 512):
         tokenized = self.tokenizer(
