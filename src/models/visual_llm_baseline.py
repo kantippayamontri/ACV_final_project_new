@@ -37,7 +37,9 @@ class VisualLLMBaseline(nn.Module):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        llm_kwargs = {"dtype": torch.float16, "device_map": "auto"}
+        torch.cuda.empty_cache()
+        max_memory = {0: "10GiB", "cpu": "32GiB"}
+        llm_kwargs = {"dtype": torch.float16, "device_map": "auto", "max_memory": max_memory}
         if load_in_4bit:
             llm_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
