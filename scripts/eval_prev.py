@@ -45,6 +45,7 @@ def load_model(args):
     model = VideoPrevLLM(
         pretrained_llm=args.pretrained_llm,
         use_lora=True,
+        load_in_4bit=True,
         lora_r=train_args.get("lora_r", 8),
         lora_alpha=train_args.get("lora_alpha", 16),
         lora_dropout=train_args.get("lora_dropout", 0.1),

@@ -23,7 +23,8 @@ class VisualLLMBaseline(nn.Module):
                  lora_alpha: int = 16,
                  lora_dropout: float = 0.1,
                  lora_target_modules: tuple = ("q_proj", "v_proj"),
-                 projector_layers: int = 3):
+                 projector_layers: int = 3,
+                 load_in_4bit: bool = False):
         super().__init__()
 
         self.pretrained_llm = pretrained_llm
@@ -36,7 +37,11 @@ class VisualLLMBaseline(nn.Module):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.llm = AutoModelForCausalLM.from_pretrained(pretrained_llm, torch_dtype=torch.float16, device_map="auto")
+        llm_kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
+        if load_in_4bit:
+            llm_kwargs["load_in_4bit"] = True
+            llm_kwargs["bnb_4bit_compute_dtype"] = torch.float16
+        self.llm = AutoModelForCausalLM.from_pretrained(pretrained_llm, **llm_kwargs)
         self.llm.requires_grad_(False)
         self._llm_dtype = next(self.llm.parameters()).dtype
 
