@@ -198,7 +198,7 @@ def load_visual_model(checkpoint_path: str, pretrained_llm: str,
                       device: str, load_in_4bit: bool,
                       max_gpu_memory_gb: float | None = None,
                       gpu_memory_fraction: float = 0.9) -> VisualLLMBaseline:
-    ckpt = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
+    ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     train_args = ckpt.get("args", {})
     lora_r, lora_alpha, lora_dropout = _get_lora_config(train_args)
     model = VisualLLMBaseline(
@@ -216,7 +216,6 @@ def load_visual_model(checkpoint_path: str, pretrained_llm: str,
     epoch, metrics, _ = load_checkpoint(
         model, optimizer, Path(checkpoint_path), device, checkpoint_data=ckpt,
     )
-    model = model.to(device)
     model.eval()
     print(f"Loaded visual-only model (epoch {epoch}, BLEU {metrics.get('BLEU', 'N/A')})")
     return model
@@ -226,7 +225,7 @@ def load_prev_model(checkpoint_path: str, pretrained_llm: str,
                     device: str, load_in_4bit: bool,
                     max_gpu_memory_gb: float | None = None,
                     gpu_memory_fraction: float = 0.9) -> VideoPrevLLM:
-    ckpt = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
+    ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     train_args = ckpt.get("args", {})
     lora_r, lora_alpha, lora_dropout = _get_lora_config(train_args)
     model = VideoPrevLLM(
@@ -244,7 +243,6 @@ def load_prev_model(checkpoint_path: str, pretrained_llm: str,
     epoch, metrics, _ = load_checkpoint(
         model, optimizer, Path(checkpoint_path), device, checkpoint_data=ckpt,
     )
-    model = model.to(device)
     model.eval()
     print(f"Loaded prev-context model (epoch {epoch}, BLEU {metrics.get('BLEU', 'N/A')})")
     return model

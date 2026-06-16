@@ -12,6 +12,8 @@ from qualitative_compare import (
     _has_features,
     check_vram_sufficient,
     extract_frames,
+    load_prev_model,
+    load_visual_model,
     report_free_vram,
 )
 
@@ -286,3 +288,59 @@ class TestVramPreCheck:
 
     def test_report_free_vram_returns_none_for_cpu(self):
         assert report_free_vram("cpu") is None
+
+
+# ── Checkpoint loading memory behavior ───────────────────────────────────────
+
+class TestCheckpointLoadingMemory:
+    """Regression tests for avoiding CUDA checkpoint preload before LLM load."""
+
+    def _patch_lightweight_loader_deps(self, monkeypatch):
+        class DummyModel:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def to(self, device):
+                raise AssertionError("loader must not move an auto-dispatched LLM with .to(device)")
+
+            def eval(self):
+                self.eval_called = True
+                return self
+
+        def fake_torch_load(path, map_location, weights_only):
+            assert map_location == "cpu"
+            assert weights_only is False
+            return {
+                "args": {"lora_r": 4, "lora_alpha": 8, "lora_dropout": 0.2},
+                "model_state": {},
+                "optimizer_state": {},
+                "epoch": 3,
+                "metrics": {"BLEU": 12.3},
+            }
+
+        monkeypatch.setattr("qualitative_compare.torch.load", fake_torch_load)
+        monkeypatch.setattr("qualitative_compare.VisualLLMBaseline", DummyModel)
+        monkeypatch.setattr("qualitative_compare.VideoPrevLLM", DummyModel)
+        monkeypatch.setattr("qualitative_compare.build_optimizer", lambda model, lr: object())
+        monkeypatch.setattr(
+            "qualitative_compare.load_checkpoint",
+            lambda model, optimizer, path, device, checkpoint_data: (
+                checkpoint_data["epoch"], checkpoint_data["metrics"], checkpoint_data["args"],
+            ),
+        )
+
+    def test_visual_loader_keeps_checkpoint_on_cpu_before_llm_load(self, monkeypatch):
+        self._patch_lightweight_loader_deps(monkeypatch)
+        model = load_visual_model(
+            "checkpoint.pt", "models/Llama-3.2-3B", "cuda", False,
+            max_gpu_memory_gb=8.0, gpu_memory_fraction=0.9,
+        )
+        assert model.kwargs["max_gpu_memory_gb"] == 8.0
+
+    def test_prev_loader_keeps_checkpoint_on_cpu_before_llm_load(self, monkeypatch):
+        self._patch_lightweight_loader_deps(monkeypatch)
+        model = load_prev_model(
+            "checkpoint.pt", "models/Llama-3.2-3B", "cuda", False,
+            max_gpu_memory_gb=8.0, gpu_memory_fraction=0.9,
+        )
+        assert model.kwargs["max_gpu_memory_gb"] == 8.0
