@@ -24,7 +24,10 @@ class VisualLLMBaseline(nn.Module):
                  lora_dropout: float = 0.1,
                  lora_target_modules: tuple = ("q_proj", "v_proj"),
                  projector_layers: int = 3,
-                 load_in_4bit: bool = False):
+                 load_in_4bit: bool = False,
+                 max_gpu_memory_gb: float | None = None,
+                 gpu_memory_fraction: float = 0.9,
+                 cpu_memory_gb: float = 32.0):
         super().__init__()
 
         self.pretrained_llm = pretrained_llm
@@ -38,7 +41,11 @@ class VisualLLMBaseline(nn.Module):
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         torch.cuda.empty_cache()
-        max_memory = {0: "10GiB", "cpu": "32GiB"}
+        max_memory = self._build_max_memory_map(
+            max_gpu_memory_gb=max_gpu_memory_gb,
+            gpu_memory_fraction=gpu_memory_fraction,
+            cpu_memory_gb=cpu_memory_gb,
+        )
         llm_kwargs = {"dtype": torch.float16, "device_map": "auto", "max_memory": max_memory}
         if load_in_4bit:
             llm_kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -65,6 +72,33 @@ class VisualLLMBaseline(nn.Module):
             num_layers=projector_layers,
         )
         self.projector = self.projector.to(self.llm.device)
+
+    @staticmethod
+    def _build_max_memory_map(max_gpu_memory_gb: float | None,
+                              gpu_memory_fraction: float,
+                              cpu_memory_gb: float) -> dict:
+        """Build a max_memory map for accelerate-style dispatch.
+
+        Behaviour:
+        - If `max_gpu_memory_gb` is given, use that (no probing).
+        - Else if CUDA is available, probe `torch.cuda.mem_get_info()` for
+          the free memory on device 0 and take `gpu_memory_fraction` of it,
+          floored at 1 GiB.
+        - Else fall back to a sensible default of 10 GiB.
+        - CPU budget is `cpu_memory_gb` (default 32 GiB).
+        """
+        if max_gpu_memory_gb is not None:
+            gpu_gb = max(float(max_gpu_memory_gb), 0.0)
+        elif torch.cuda.is_available():
+            try:
+                free_bytes, _ = torch.cuda.mem_get_info(0)
+                probed_gb = (free_bytes / (1024 ** 3)) * gpu_memory_fraction
+                gpu_gb = max(probed_gb, 1.0)
+            except Exception:
+                gpu_gb = 10.0
+        else:
+            gpu_gb = 10.0
+        return {0: f"{gpu_gb:.2f}GiB", "cpu": f"{float(cpu_memory_gb):.2f}GiB"}
 
     def _tokenize_targets(self, targets: list[str], max_length: int = 512):
         tokenized = self.tokenizer(

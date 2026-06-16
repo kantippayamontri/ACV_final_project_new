@@ -76,6 +76,16 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--load-in-4bit", action="store_true",
                         help="Load LLM in 4-bit quantization (reduces VRAM)")
+    parser.add_argument("--max-gpu-memory-gb", type=float, default=None,
+                        help="Override the per-model GPU memory budget (GiB). "
+                             "If unset, free VRAM is probed via torch.cuda.mem_get_info() "
+                             "and multiplied by --gpu-memory-fraction.")
+    parser.add_argument("--gpu-memory-fraction", type=float, default=0.9,
+                        help="Fraction of free VRAM to allocate to the LLM (default: 0.9). "
+                             "Only used when --max-gpu-memory-gb is unset.")
+    parser.add_argument("--min-free-vram-gb", type=float, default=2.0,
+                        help="Refuse to load a model if free VRAM (GiB) drops below this. "
+                             "Default: 2.0. Set to 0 to disable the pre-check.")
     return parser.parse_args(argv)
 
 
@@ -154,8 +164,40 @@ def _get_lora_config(train_args: dict) -> tuple:
     )
 
 
+def report_free_vram(device: str) -> float | None:
+    """Return currently free VRAM in GiB on the target device, or None if not CUDA."""
+    if not torch.cuda.is_available() or device != "cuda":
+        return None
+    free_bytes, _ = torch.cuda.mem_get_info(0)
+    return free_bytes / (1024 ** 3)
+
+
+def check_vram_sufficient(args, label: str) -> None:
+    """Raise a helpful error if free VRAM is too low to safely load the next model.
+
+    Skips the check when the device is not CUDA, when --min-free-vram-gb <= 0,
+    or when --load-in-4bit is set (4-bit quantisation is much smaller and the
+    budget override already accounts for the small footprint).
+    """
+    if args.min_free_vram_gb <= 0 or args.load_in_4bit or args.device != "cuda":
+        return
+    free_gb = report_free_vram(args.device)
+    if free_gb is None:
+        return
+    if free_gb < args.min_free_vram_gb:
+        raise RuntimeError(
+            f"Insufficient free VRAM before loading {label} model: "
+            f"{free_gb:.2f} GiB free, --min-free-vram-gb={args.min_free_vram_gb:.2f} GiB. "
+            f"Free up GPU memory (e.g. kill other processes, use --load-in-4bit, "
+            f"or lower --min-free-vram-gb)."
+        )
+    print(f"  [VRAM] {label}: {free_gb:.2f} GiB free before load")
+
+
 def load_visual_model(checkpoint_path: str, pretrained_llm: str,
-                      device: str, load_in_4bit: bool) -> VisualLLMBaseline:
+                      device: str, load_in_4bit: bool,
+                      max_gpu_memory_gb: float | None = None,
+                      gpu_memory_fraction: float = 0.9) -> VisualLLMBaseline:
     ckpt = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
     train_args = ckpt.get("args", {})
     lora_r, lora_alpha, lora_dropout = _get_lora_config(train_args)
@@ -167,6 +209,8 @@ def load_visual_model(checkpoint_path: str, pretrained_llm: str,
         lora_dropout=lora_dropout,
         load_in_4bit=load_in_4bit,
         projector_layers=train_args.get("projector_layers", 3),
+        max_gpu_memory_gb=max_gpu_memory_gb,
+        gpu_memory_fraction=gpu_memory_fraction,
     )
     optimizer = build_optimizer(model, lr=0.0)
     epoch, metrics, _ = load_checkpoint(
@@ -179,7 +223,9 @@ def load_visual_model(checkpoint_path: str, pretrained_llm: str,
 
 
 def load_prev_model(checkpoint_path: str, pretrained_llm: str,
-                    device: str, load_in_4bit: bool) -> VideoPrevLLM:
+                    device: str, load_in_4bit: bool,
+                    max_gpu_memory_gb: float | None = None,
+                    gpu_memory_fraction: float = 0.9) -> VideoPrevLLM:
     ckpt = torch.load(str(checkpoint_path), map_location=device, weights_only=False)
     train_args = ckpt.get("args", {})
     lora_r, lora_alpha, lora_dropout = _get_lora_config(train_args)
@@ -191,6 +237,8 @@ def load_prev_model(checkpoint_path: str, pretrained_llm: str,
         lora_dropout=lora_dropout,
         load_in_4bit=load_in_4bit,
         projector_layers=train_args.get("projector_layers", 3),
+        max_gpu_memory_gb=max_gpu_memory_gb,
+        gpu_memory_fraction=gpu_memory_fraction,
     )
     optimizer = build_optimizer(model, lr=0.0)
     epoch, metrics, _ = load_checkpoint(
@@ -248,9 +296,12 @@ def select_examples(args, all_rows: list[dict], env) -> list[dict]:
     pool_rows = random.sample(valid_rows, pool_size)
 
     print("Loading visual-only model for example selection...")
+    check_vram_sufficient(args, "visual-only (selection)")
     model = load_visual_model(
         args.vis_checkpoint, args.pretrained_llm,
         args.device, args.load_in_4bit,
+        max_gpu_memory_gb=args.max_gpu_memory_gb,
+        gpu_memory_fraction=args.gpu_memory_fraction,
     )
 
     scored = []
@@ -309,9 +360,12 @@ def select_examples(args, all_rows: list[dict], env) -> list[dict]:
 def run_visual_model(args, examples: list[dict], env) -> dict:
     """Run visual-only model on the selected examples. Returns {name: prediction}."""
     print("\n=== Visual-only model ===")
+    check_vram_sufficient(args, "visual-only")
     model = load_visual_model(
         args.vis_checkpoint, args.pretrained_llm,
         args.device, args.load_in_4bit,
+        max_gpu_memory_gb=args.max_gpu_memory_gb,
+        gpu_memory_fraction=args.gpu_memory_fraction,
     )
 
     predictions = {}
@@ -334,9 +388,12 @@ def run_visual_model(args, examples: list[dict], env) -> dict:
 def run_gt_prev_model(args, examples: list[dict], env) -> dict:
     """Run GT prev-context model. Feeds ground-truth PREV_SENTENCE as context."""
     print("\n=== GT previous-context model ===")
+    check_vram_sufficient(args, "gt-prev")
     model = load_prev_model(
         args.gt_prev_checkpoint, args.pretrained_llm,
         args.device, args.load_in_4bit,
+        max_gpu_memory_gb=args.max_gpu_memory_gb,
+        gpu_memory_fraction=args.gpu_memory_fraction,
     )
 
     predictions = {}
@@ -365,9 +422,12 @@ def run_mixed_prev_model(args, examples: list[dict], all_rows: list[dict],
     as previous-sentence context. Only keeps predictions for target examples.
     """
     print("\n=== Mixed previous-context model ===")
+    check_vram_sufficient(args, "mixed-prev")
     model = load_prev_model(
         args.mixed_prev_checkpoint, args.pretrained_llm,
         args.device, args.load_in_4bit,
+        max_gpu_memory_gb=args.max_gpu_memory_gb,
+        gpu_memory_fraction=args.gpu_memory_fraction,
     )
 
     target_names = {ex["sentence_name"] for ex in examples}
